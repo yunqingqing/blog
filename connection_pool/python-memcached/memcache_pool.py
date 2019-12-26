@@ -2,6 +2,7 @@ import collections
 import contextlib
 import logging
 from six.moves import queue
+import threading
 
 import memcache
 
@@ -138,29 +139,60 @@ class PoolClient():
 
     @contextlib.contextmanager
     def reserve(self):
-        with self.pool.get() as client:
+        with self.pool.get(block=False) as client:
             yield client
+
+
+class CachePool():
+    def __init__(self, memcached_servers):
+        self._local = threading.local()
+        self._memcached_servers = memcached_servers
+
+    @contextlib.contextmanager
+    def reserve(self):
+        if not getattr(self._local, 'clients', None):
+            self._local.clients = []
+
+        try:
+            c = self._local.clients.pop()
+        except IndexError:
+            c = memcache.Client(self._memcached_servers)
+
+        try:
+            yield c
+        finally:
+            self._local.clients.append(c)
+
 
 class CacheManager():
     def __init__(self, memcache_servers, memcache_dead_retry=None,
                  memcache_pool_maxsize=None, memcache_pool_unused_timeout=None,
                  memcahce_pool_conn_get_timeout=None,
                  memcache_pool_socket_timeout=None):
-        self._pool = PoolClient(
-            memcache_servers,
-            memcache_dead_retry=memcache_dead_retry,
-            memcache_pool_socket_timeout=memcache_pool_socket_timeout,
-            memcache_pool_maxsize=memcache_pool_maxsize,
-            memcache_pool_unused_timeout=memcache_pool_unused_timeout,
-            memcahce_pool_conn_get_timeout=memcahce_pool_conn_get_timeout
-        )
+        # self._pool = PoolClient(
+        #     memcache_servers,
+        #     memcache_dead_retry=memcache_dead_retry,
+        #     memcache_pool_socket_timeout=memcache_pool_socket_timeout,
+        #     memcache_pool_maxsize=memcache_pool_maxsize,
+        #     memcache_pool_unused_timeout=memcache_pool_unused_timeout,
+        #     memcahce_pool_conn_get_timeout=memcahce_pool_conn_get_timeout
+        # )
+
+        self._pool = CachePool(memcache_servers)
 
     def get(self, key):
-        import pdb;pdb.set_trace()
+        # import pdb;pdb.set_trace()
         with self._pool.reserve() as client:
             result = client.get(key)
         return result
 
+    def set(self, key, value):
+        # import pdb;pdb.set_trace()
+        with self._pool.reserve() as client:
+            result = client.set(key, value)
+        return result
+
 if __name__ == "__main__":
     cache = CacheManager(["127.0.0.1:11211"], memcache_pool_maxsize=10, memcahce_pool_conn_get_timeout=10)
+    print(cache.set("k1", "v1"))
     print(cache.get("k1"))
